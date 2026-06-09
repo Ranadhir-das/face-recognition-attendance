@@ -5,7 +5,12 @@ import './App.css';
 function App() {
   const [view, setView] = useState('scanner'); 
   const [attendanceData, setAttendanceData] = useState([]);
-  const [studentName, setStudentName] = useState('');
+  const [studentsList, setStudentsList] = useState([]);
+  const [selectedStudent, setSelectedStudent] = useState(null); 
+  
+  const [studentForm, setStudentForm] = useState({ name: '', className: '', roll: '', dob: '', email: '', phone: '' });
+  const [regMode, setRegMode] = useState('capture'); 
+  const [uploadedImage, setUploadedImage] = useState('');
   const [registrationStatus, setRegistrationStatus] = useState({ type: '', msg: '' });
   const [scanResult, setScanResult] = useState('Initializing Scanner...');
   
@@ -32,7 +37,8 @@ function App() {
       if (result.status === 'success') {
         localStorage.setItem('adminToken', result.token);
         setIsAuthenticated(true);
-        setView('dashboard'); 
+        setView('dashboard');
+        fetchStudents();
       } else {
         setLoginError(result.message);
       }
@@ -57,11 +63,25 @@ function App() {
     }
   };
 
+  const fetchStudents = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/students');
+      const data = await response.json();
+      setStudentsList(data);
+    } catch (error) {
+      console.error("Error mapping student metadata index:", error);
+    }
+  };
+
   useEffect(() => {
     fetchAttendance();
     const interval = setInterval(fetchAttendance, 3000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (isAuthenticated) fetchStudents();
+  }, [view, isAuthenticated]);
 
   const startBrowserCamera = async () => {
     try {
@@ -82,9 +102,8 @@ function App() {
 
   const captureAndRecognize = async () => {
     if (!videoRef.current || videoRef.current.readyState !== 4 || isProcessingRef.current) return;
-
     isProcessingRef.current = true;
-
+    
     const canvas = document.createElement('canvas');
     canvas.width = videoRef.current.videoWidth;
     canvas.height = videoRef.current.videoHeight;
@@ -99,7 +118,6 @@ function App() {
         body: JSON.stringify({ image: base64Image })
       });
       const result = await response.json();
-      
       if (result.faces && result.faces.length > 0) {
         setScanResult(result.faces.includes("Unknown") ? "⚠️ Unknown Face Detected" : `✅ Recognized: ${result.faces.join(", ")}`);
       } else {
@@ -113,7 +131,7 @@ function App() {
   };
 
   useEffect(() => {
-    if (view === 'register') {
+    if (view === 'register' && regMode === 'capture') {
       startBrowserCamera();
     } else if (view === 'scanner') {
       setScanResult("Initializing Scanner...");
@@ -124,32 +142,65 @@ function App() {
       stopBrowserCamera();
     }
     return () => stopBrowserCamera();
-  }, [view]);
+  }, [view, regMode]);
+
+  const handleFileChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => setUploadedImage(reader.result);
+      reader.readAsDataURL(file);
+    }
+  };
 
   const handleRegisterSubmit = async (e) => {
     e.preventDefault();
-    if (!studentName.trim() || !videoRef.current) return;
-    try {
+    const { name, className, roll, dob, email, phone } = studentForm;
+    if (!name.trim() || !className.trim() || !roll.trim() || !dob || !email.trim() || !phone.trim()) return;
+
+    let finalImage = uploadedImage;
+    if (regMode === 'capture') {
+      if (!videoRef.current) return;
       const canvas = document.createElement('canvas');
       canvas.width = videoRef.current.videoWidth;
       canvas.height = videoRef.current.videoHeight;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-      const base64Image = canvas.toDataURL('image/jpeg');
+      finalImage = canvas.toDataURL('image/jpeg');
+    }
 
-      setRegistrationStatus({ type: 'info', msg: 'Uploading...' });
+    if (!finalImage) {
+      setRegistrationStatus({ type: 'error', msg: 'Missing identity data source media.' });
+      return;
+    }
 
+    try {
+      setRegistrationStatus({ type: 'info', msg: 'Uploading profile...' });
       const response = await fetch('http://localhost:5000/api/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: studentName, image: base64Image })
+        body: JSON.stringify({ name, class_name: className, roll, dob, email, phone, image: finalImage })
       });
       const result = await response.json();
-      
       setRegistrationStatus({ type: result.status === 'success' ? 'success' : 'error', msg: result.message });
-      if (result.status === 'success') setStudentName('');
+      if (result.status === 'success') {
+        setStudentForm({ name: '', className: '', roll: '', dob: '', email: '', phone: '' });
+        setUploadedImage('');
+        fetchStudents();
+      }
     } catch (error) {
       setRegistrationStatus({ type: 'error', msg: 'Connection failed.' });
+    }
+  };
+
+  const handleDeleteStudent = async (id) => {
+    if (!window.confirm("Are you sure you want to delete this student profile?")) return;
+    try {
+      const response = await fetch(`http://localhost:5000/api/students/${id}`, { method: 'DELETE' });
+      const result = await response.json();
+      if (result.status === 'success') fetchStudents();
+    } catch (err) {
+      console.error("Could not transmit deletion payload:", err);
     }
   };
 
@@ -158,7 +209,6 @@ function App() {
     return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   };
 
-  const uniqueStudents = new Set(attendanceData.map(d => d.Name)).size;
   const presentToday = attendanceData.filter(d => d.Date === getTodayString()).length;
   
   const processChartData = () => {
@@ -183,23 +233,17 @@ function App() {
          ) : (
            <div className="login-wrapper">
              <div className="login-container">
-               <header>
-                 <div className="security-icon">🔒</div>
-                 <h1>Admin Portal</h1>
-                 <p>Enter credentials to access the dashboard</p>
-               </header>
+               <header><div className="security-icon">🔒</div><h1>Admin Portal</h1><p>Enter credentials to access the dashboard</p></header>
                <form onSubmit={handleLogin} className="login-form">
                  <div className="input-group">
                    <label>Username</label>
-                   <input type="text" color='black' value={loginForm.username} onChange={(e) => setLoginForm({...loginForm, username: e.target.value})} placeholder="admin" />
+                   <input type="text" value={loginForm.username} onChange={(e) => setLoginForm({...loginForm, username: e.target.value})} placeholder="admin" />
                  </div>
                  <div className="input-group">
                     <label>Password</label>
                     <div className="password-input-wrapper">
                       <input type={showPassword ? "text" : "password"} value={loginForm.password} onChange={(e) => setLoginForm({...loginForm, password: e.target.value})} placeholder="••••••••" />
-                      <button type="button" className="toggle-password-btn" onClick={() => setShowPassword(!showPassword)} title={showPassword ? "Hide password" : "Show password"}>
-                        {showPassword ? "🙉" : "🙈"}
-                      </button>
+                      <button type="button" className="toggle-password-btn" onClick={() => setShowPassword(!showPassword)}>{showPassword ? "🙈" : "👁️"}</button>
                     </div>
                   </div>
                  <button type="submit" className="btn-login">Secure Login</button>
@@ -217,6 +261,7 @@ function App() {
       <nav className="navigation-bar" style={{justifyContent: 'space-between'}}>
         <div style={{display: 'flex', gap: '10px'}}>
           <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}>📊 Analytics</button>
+          <button className={view === 'manage' ? 'active' : ''} onClick={() => setView('manage')}>👥 Manage Students</button>
           <button className={view === 'register' ? 'active' : ''} onClick={() => setView('register')}>👤 Register Student</button>
         </div>
         <button onClick={handleLogout} style={{color: '#dc2626', background: 'transparent', border: 'none', cursor: 'pointer', fontWeight: '600'}}>Log Out</button>
@@ -227,13 +272,13 @@ function App() {
           <header><h1>System Analytics</h1><p>Live database metrics and verification history</p></header>
           <div className="kpi-container">
             <div className="kpi-card"><h3>Total Registered Logs</h3><h2>{attendanceData.length}</h2></div>
-            <div className="kpi-card"><h3>Unique Students Tracked</h3><h2>{uniqueStudents}</h2></div>
+            <div className="kpi-card"><h3>Total Enrolled Students</h3><h2>{studentsList.length}</h2></div>
             <div className="kpi-card highlight"><h3>Present Today</h3><h2>{presentToday}</h2></div>
           </div>
           <div className="chart-container">
             <h3>Attendance Trends (By Day)</h3>
             <ResponsiveContainer width="100%" height={250}>
-              <BarChart data={processChartData()} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+              <BarChart data={processChartData()}>
                 <XAxis dataKey="date" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
                 <YAxis allowDecimals={false} stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
                 <Tooltip cursor={{fill: '#f1f5f9'}} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: 'var(--shadow-md)' }}/>
@@ -248,9 +293,39 @@ function App() {
               <tbody>
                 {attendanceData.length === 0 ? (<tr><td colSpan="4">No records found.</td></tr>) : (
                   attendanceData.slice(0, 10).map((record, index) => (
-                    <tr key={index}>
-                      <td><strong>{record.Name}</strong></td><td>{record.Time}</td><td>{record.Date}</td>
-                      <td><span className="status-badge">Verified ✓</span></td>
+                    <tr key={index}><td><strong>{record.Name}</strong></td><td>{record.Time}</td><td>{record.Date}</td><td><span className="status-badge">Verified ✓</span></td></tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </main>
+        </div>
+      )}
+
+      {view === 'manage' && (
+        <div className="analytics-view">
+          <header><h1>Student Master Database</h1></header>
+          <main>
+            <table className="attendance-table">
+              <thead>
+                <tr><th>ID</th><th>Student Name</th><th>Class</th><th>Roll Number</th><th>Actions</th></tr>
+              </thead>
+              <tbody>
+                {studentsList.length === 0 ? (<tr><td colSpan="5">No student accounts registered in system memory.</td></tr>) : (
+                  studentsList.map((student) => (
+                    <tr key={student.id}>
+                      <td>#{student.id}</td>
+                      <td><strong>{student.name.toUpperCase()}</strong></td>
+                      <td>{student.class_name}</td>
+                      <td>{student.roll}</td>
+                      <td>
+                        <button onClick={() => setSelectedStudent(student)} style={{backgroundColor: '#e0e7ff', color: '#4f46e5', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', marginRight: '8px'}}>
+                          View Profile
+                        </button>
+                        <button onClick={() => handleDeleteStudent(student.id)} style={{backgroundColor: '#fee2e2', color: '#dc2626', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold'}}>
+                          Delete
+                        </button>
+                      </td>
                     </tr>
                   ))
                 )}
@@ -261,17 +336,96 @@ function App() {
       )}
 
       {view === 'register' && (
-        <div className="registration-container">
-          <header><h1>Student Profile Registration</h1><p>Enroll identities directly into the local dataset</p></header>
+        <div className="registration-container" style={{maxWidth: '550px'}}>
+          <header><h1>Student Registration Portal</h1></header>
+          
+          <div style={{display: 'flex', gap: '10px', marginBottom: '20px'}}>
+            <button type="button" onClick={() => setRegMode('capture')} style={{flex: 1, padding: '10px', borderRadius: '8px', cursor: 'pointer', border: '1px solid #cbd5e1', fontWeight: 'bold', backgroundColor: regMode === 'capture' ? '#4f46e5' : '#fff', color: regMode === 'capture' ? '#fff' : '#475569'}}>📷 Live Webcam Snap</button>
+            <button type="button" onClick={() => setRegMode('upload')} style={{flex: 1, padding: '10px', borderRadius: '8px', cursor: 'pointer', border: '1px solid #cbd5e1', fontWeight: 'bold', backgroundColor: regMode === 'upload' ? '#4f46e5' : '#fff', color: regMode === 'upload' ? '#fff' : '#475569'}}>📁 Manual File Upload</button>
+          </div>
+
           <form onSubmit={handleRegisterSubmit} className="register-form">
-            <div className="camera-viewbox"><video ref={videoRef} autoPlay playsInline muted /></div>
+            {regMode === 'capture' ? (
+              <div className="camera-viewbox"><video ref={videoRef} autoPlay playsInline muted /></div>
+            ) : (
+              <div style={{marginBottom: '20px', padding: '20px', border: '2px dashed #cbd5e1', borderRadius: '12px', textAlign: 'center', backgroundColor: '#f8fafc'}}>
+                <input type="file" accept="image/*" onChange={handleFileChange} style={{marginBottom: '10px'}} />
+                {uploadedImage && <img src={uploadedImage} alt="Preview" style={{maxWidth: '100%', maxHeight: '150px', borderRadius: '8px', marginTop: '10px', display: 'block', marginLeft: 'auto', marginRight: 'auto'}} />}
+              </div>
+            )}
+
             <div className="input-group">
-              <label>Full Name:</label>
-              <input type="text" placeholder="Enter student name" value={studentName} onChange={(e) => setStudentName(e.target.value)} />
+              <label>Full Name</label>
+              <input type="text" placeholder="e.g. Ranadhir Das" value={studentForm.name} onChange={(e) => setStudentForm({...studentForm, name: e.target.value})} />
             </div>
-            <button type="submit" className="btn-submit">Capture & Register Profile</button>
+            <div style={{display: 'flex', gap: '15px'}}>
+              <div className="input-group" style={{flex: 1}}>
+                <label>Class / Program</label>
+                <input type="text" placeholder="e.g. MCA" value={studentForm.className} onChange={(e) => setStudentForm({...studentForm, className: e.target.value})} />
+              </div>
+              <div className="input-group" style={{flex: 1}}>
+                <label>Roll Number</label>
+                <input type="text" placeholder="e.g. 24" value={studentForm.roll} onChange={(e) => setStudentForm({...studentForm, roll: e.target.value})} />
+              </div>
+            </div>
+            <div className="input-group">
+              <label>Date of Birth</label>
+              <input type="date" value={studentForm.dob} onChange={(e) => setStudentForm({...studentForm, dob: e.target.value})} />
+            </div>
+            <div className="input-group">
+              <label>Email Address</label>
+              <input type="email" placeholder="student@university.edu" value={studentForm.email} onChange={(e) => setStudentForm({...studentForm, email: e.target.value})} />
+            </div>
+            <div className="input-group">
+              <label>Phone Number</label>
+              <input type="tel" placeholder="e.g. +91 9876543210" value={studentForm.phone} onChange={(e) => setStudentForm({...studentForm, phone: e.target.value})} />
+            </div>
+
+            <button type="submit" className="btn-submit">Complete Verification Enrollment</button>
             {registrationStatus.msg && (<div className={`status-banner ${registrationStatus.type}`}>{registrationStatus.msg}</div>)}
           </form>
+        </div>
+      )}
+
+      {/* DYNAMIC METADATA PROFILE MODAL */}
+      {selectedStudent && (
+        <div className="modal-overlay" onClick={() => setSelectedStudent(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Student Detailed Profile</h2>
+              <button className="modal-close-btn" onClick={() => setSelectedStudent(null)}>×</button>
+            </div>
+            <div className="profile-card-body">
+              
+              {/* --- IMAGE DISPLAY BLOCK --- */}
+              <div className="profile-avatar-placeholder">
+                {selectedStudent.image_path ? (
+                  <img
+                    src={`http://localhost:5000/api/dataset/${selectedStudent.image_path.replace('dataset/', '').replace('dataset\\', '')}`} 
+                    alt={selectedStudent.name}
+                    className="profile-avatar-img"
+
+                    onError={(e) => {
+                      e.target.style.display = 'none'; 
+                      e.target.parentNode.innerHTML = '👤';
+                    }}
+                  />
+                ) : (
+                  "👤" 
+                )}
+              </div>
+              {/* --------------------------- */}
+
+              <div className="profile-details-grid">
+                <div className="profile-field"><span className="field-title">Full Name</span><span className="field-value">{selectedStudent.name.toUpperCase()}</span></div>
+                <div className="profile-field"><span className="field-title">Class/Program</span><span className="field-value">{selectedStudent.class_name}</span></div>
+                <div className="profile-field"><span className="field-title">Roll Number</span><span className="field-value">{selectedStudent.roll}</span></div>
+                <div className="profile-field"><span className="field-title">Date of Birth</span><span className="field-value">{selectedStudent.dob}</span></div>
+                <div className="profile-field"><span className="field-title">Email Address</span><span className="field-value">{selectedStudent.email}</span></div>
+                <div className="profile-field"><span className="field-title">Phone Number</span><span className="field-value">{selectedStudent.phone}</span></div>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

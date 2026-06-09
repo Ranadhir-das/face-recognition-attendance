@@ -1,0 +1,13 @@
+# Ignore the Python virtual environment
+env/
+.venv/
+__pycache__/
+
+# Ignore the SQLite database
+attendance.db
+
+# Ignore the dataset folder containing personal images
+dataset/
+
+# Ignore Mac system files
+.DS_Store
